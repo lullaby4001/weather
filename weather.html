@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>溫濕度預測</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--tx:#1b2430;--mut:#6b7686;--bd:#e1e6ed;--c1:#e8590c;--c2:#ae3ec9;--c3:#1c7ed6;--c4:#0ca678;--ca:#e8590c;--cb:#1c7ed6}
+@media (prefers-color-scheme:dark){:root{--bg:#10151c;--card:#1a212b;--tx:#e8edf3;--mut:#8f9bab;--bd:#2a3340;--c1:#ff922b;--c2:#da77f2;--c3:#4dabf7;--c4:#38d9a9;--ca:#ff922b;--cb:#4dabf7}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:system-ui,"Noto Sans TC",sans-serif;padding:16px}
+.w{max-width:1000px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:16px;margin-bottom:14px;min-width:0}
+h1{font-size:20px;margin:0 0 12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sr{display:flex;gap:8px;position:relative;margin-top:10px}
+input{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--bd);border-radius:10px;background:var(--bg);color:var(--tx);font-size:15px}
+button{padding:9px 13px;border:1px solid var(--bd);border-radius:10px;background:var(--card);color:var(--tx);cursor:pointer;font-size:14px}
+button.on{background:var(--c3);color:#fff;border-color:var(--c3)}
+button.sm{padding:3px 8px;font-size:12px;border-radius:8px}
+#res{position:absolute;top:46px;left:0;right:0;background:var(--card);border:1px solid var(--bd);border-radius:10px;z-index:5;display:none;max-height:260px;overflow:auto}
+#res div{padding:10px 12px;cursor:pointer;font-size:14px;border-bottom:1px solid var(--bd)}
+#res div:hover{background:var(--bg)}
+.ll{font-size:14px;margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+.chip{display:inline-flex;gap:4px;align-items:center;border:1px solid var(--bd);border-radius:20px;padding:4px 10px;font-size:13px;cursor:pointer}
+.chip b{color:var(--mut);font-weight:400}
+.nm{font-weight:600;margin:6px 0}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px}
+.tile{background:var(--bg);border-radius:10px;padding:10px}
+.big{font-size:28px;font-weight:700;line-height:1.1}
+.lab{color:var(--mut);font-size:13px;margin-bottom:4px}
+.ch{position:relative;height:250px}
+#charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:14px}
+#charts .card{margin:0}
+.note{color:var(--mut);font-size:12px;margin-top:8px}
+@media(max-width:560px){.tiles{grid-template-columns:repeat(2,1fr)}}
+</style>
+</head>
+<body>
+<div class="w">
+  <div class="card">
+    <h1>🌤 溫度 · 濕度預測</h1>
+    <div class="row">
+      <button id="sA" class="on">主要地點</button>
+      <button id="sB">比較地點</button>
+      <span class="lab" style="margin:0">選擇後，搜尋或點選收藏會設定該地點</span>
+    </div>
+    <div class="sr">
+      <input id="q" placeholder="搜尋城市或地址，例如：高雄、台北市信義區、Tokyo">
+      <button id="go">搜尋</button>
+      <button id="me">📍 定位</button>
+      <div id="res"></div>
+    </div>
+    <div id="locs"></div>
+    <div id="favs" class="row" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="now"></div>
+
+  <div class="card">
+    <div class="row" id="rg"></div>
+    <div class="row" style="margin-top:10px"><span class="lab" style="margin:0">單位</span><button id="uC">°C</button><button id="uF">°F</button></div>
+    <div class="note" id="note"></div>
+  </div>
+
+  <div id="charts"></div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const short=n=>n.split(',')[0];
+function ls(k,d){try{return localStorage.getItem('wx_'+k)??d}catch(e){return d}}
+function ss(k,v){try{localStorage.setItem('wx_'+k,v)}catch(e){}}
+let U=ls('unit','C'),FAV=[];try{FAV=JSON.parse(ls('fav','[]'))}catch(e){}
+const S={days:7,target:'A',A:null,B:null};
+const RANGES=[[1,'一天'],[7,'一週'],[14,'兩週'],[21,'三週'],[30,'一個月'],[60,'兩個月']];
+const CH=[['ct','t','溫度'],['ca','a','體感溫度'],['chh','h','相對濕度'],['cp','p','降雨機率']];
+const cv=v=>v==null?null:(U==='F'?v*9/5+32:v);
+const id1=v=>v;
+const mean=a=>{a=a.filter(v=>v!=null);return a.length?a.reduce((x,y)=>x+y,0)/a.length:null};
+const mx=a=>{a=a.filter(v=>v!=null);return a.length?Math.max(...a):null};
+const mn=a=>{a=a.filter(v=>v!=null);return a.length?Math.min(...a):null};
+const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const fmt=v=>v==null?'--':v.toFixed(1);
+let charts={};
+
+RANGES.forEach(([d,l])=>{const b=document.createElement('button');b.textContent=l;b.dataset.d=d;b.onclick=()=>{S.days=d;draw()};$('rg').appendChild(b)});
+$('charts').innerHTML=CH.map(([id])=>`<div class="card"><div class="lab" id="l${id}"></div><div class="ch"><canvas id="${id}"></canvas></div></div>`).join('');
+
+/* ---------- 資料 ---------- */
+async function fetchFc(L){
+  try{
+    const u=`https://api.open-meteo.com/v1/forecast?latitude=${L.lat}&longitude=${L.lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature&hourly=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation_probability&forecast_days=16&timezone=auto`;
+    L.fc=await (await fetch(u)).json();
+  }catch(e){L.err=true}
+}
+async function getClim(L){
+  if(L.clim)return L.clim;
+  const now=new Date(),end=new Date(now.getTime()+63*864e5),acc={};
+  for(let y=1;y<=3;y++){
+    const a=new Date(now),b=new Date(end);a.setFullYear(a.getFullYear()-y);b.setFullYear(b.getFullYear()-y);
+    try{
+      const r=await (await fetch(`https://archive-api.open-meteo.com/v1/archive?latitude=${L.lat}&longitude=${L.lon}&start_date=${iso(a)}&end_date=${iso(b)}&hourly=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation&timezone=auto`)).json();
+      const m={},h=r.hourly;
+      h.time.forEach((t,i)=>{const e=m[t.slice(5,10)]=m[t.slice(5,10)]||{t:[],a:[],h:[],p:0};e.t.push(h.temperature_2m[i]);e.a.push(h.apparent_temperature[i]);e.h.push(h.relative_humidity_2m[i]);e.p+=h.precipitation[i]||0});
+      for(const k in m){const e=acc[k]=acc[k]||{t:[],a:[],h:[],x:[],n:[],p:[]};e.t.push(mean(m[k].t));e.a.push(mean(m[k].a));e.h.push(mean(m[k].h));e.x.push(mx(m[k].t));e.n.push(mn(m[k].t));e.p.push(m[k].p)}
+    }catch(e){}
+  }
+  return L.clim=acc;
+}
+async function series(L,days){
+  const h=L.fc.hourly,o={labels:[],t:[],x:[],n:[],a:[],h:[],p:[],est:[]};
+  if(days===1){
+    const i0=Math.max(0,h.time.findIndex(x=>x>=L.fc.current.time.slice(0,13)));
+    for(let i=i0;i<Math.min(i0+24,h.time.length);i++){o.labels.push(h.time[i].slice(5,10)+' '+h.time[i].slice(11,16));o.t.push(h.temperature_2m[i]);o.a.push(h.apparent_temperature[i]);o.h.push(h.relative_humidity_2m[i]);o.p.push(h.precipitation_probability[i])}
+    return o;
+  }
+  const m={};
+  h.time.forEach((t,i)=>{const e=m[t.slice(0,10)]=m[t.slice(0,10)]||{t:[],a:[],h:[],p:[]};e.t.push(h.temperature_2m[i]);e.a.push(h.apparent_temperature[i]);e.h.push(h.relative_humidity_2m[i]);e.p.push(h.precipitation_probability[i])});
+  const keys=Object.keys(m).sort();
+  keys.slice(0,days).forEach(k=>{o.labels.push(k.slice(5));o.t.push(mean(m[k].t));o.x.push(mx(m[k].t));o.n.push(mn(m[k].t));o.a.push(mean(m[k].a));o.h.push(mean(m[k].h));o.p.push(mx(m[k].p));o.est.push(false)});
+  if(days>keys.length){
+    const c=await getClim(L),st=new Date(keys[keys.length-1]+'T00:00:00');
+    for(let i=1;o.labels.length<days;i++){
+      const dt=new Date(st.getTime()+i*864e5),md=iso(dt).slice(5),e=c[md],pool=[];
+      for(let f=-3;f<=3;f++){const q=c[iso(new Date(dt.getTime()+f*864e5)).slice(5)];if(q)pool.push(...q.p)}
+      o.labels.push(md);o.est.push(true);
+      o.t.push(e?mean(e.t):null);o.x.push(e?mean(e.x):null);o.n.push(e?mean(e.n):null);o.a.push(e?mean(e.a):null);o.h.push(e?mean(e.h):null);
+      o.p.push(pool.length?100*pool.filter(v=>v>=1).length/pool.length:null);
+    }
+  }
+  return o;
+}
+
+/* ---------- 畫面 ---------- */
+function renderNow(){
+  $('now').innerHTML=[S.A,S.B].filter(Boolean).map((L,i)=>{
+    if(!L.fc)return `<div class="lab">${esc(short(L.name))}：${L.err?'載入失敗，請檢查網路':'載入中…'}</div>`;
+    const c=L.fc.current,h=L.fc.hourly,ix=Math.max(0,h.time.findIndex(x=>x>=c.time.slice(0,13))),pp=h.precipitation_probability[ix];
+    const T=(l,v,k)=>`<div class="tile"><div class="lab">${l}</div><div class="big" style="color:var(${k})">${v}</div></div>`;
+    return `<div class="nm">${i?'比較':'主要'}・${esc(short(L.name))}</div><div class="tiles">`+
+      T('目前溫度',fmt(cv(c.temperature_2m))+'°'+U,'--c1')+T('體感溫度',fmt(cv(c.apparent_temperature))+'°'+U,'--c2')+
+      T('目前濕度',Math.round(c.relative_humidity_2m)+'%','--c3')+T('降雨機率',pp==null?'--':Math.round(pp)+'%','--c4')+`</div>`;
+  }).join('');
+}
+function renderLocs(){
+  const line=(slot,L,c)=>L?`<div class="ll"><span class="dot" style="background:var(${c})"></span>${slot==='A'?'主要':'比較'}：${esc(L.name)} <button class="sm" onclick="favAdd('${slot}')">⭐ 收藏</button>${slot==='B'?'<button class="sm" onclick="clearB()">✕ 取消比較</button>':''}</div>`:'';
+  $('locs').innerHTML=line('A',S.A,'--ca')+line('B',S.B,'--cb');
+  $('favs').innerHTML=FAV.length?'<span class="lab" style="margin:0">收藏：</span>':'';
+  FAV.forEach((f,i)=>{const d=document.createElement('span');d.className='chip';d.innerHTML=esc(short(f.name))+' <b>✕</b>';
+    d.onclick=e=>{if(e.target.tagName==='B'){FAV.splice(i,1);ss('fav',JSON.stringify(FAV));renderLocs()}else setLoc(S.target,f)};$('favs').appendChild(d)});
+  $('sA').classList.toggle('on',S.target==='A');$('sB').classList.toggle('on',S.target==='B');
+  $('q').placeholder=(S.target==='A'?'搜尋主要地點':'搜尋比較地點')+'（城市或地址）';
+}
+function favAdd(s){const L=S[s];if(!L||FAV.some(f=>f.lat===L.lat&&f.lon===L.lon))return;FAV.push({name:L.name,lat:L.lat,lon:L.lon});ss('fav',JSON.stringify(FAV));renderLocs()}
+function clearB(){S.B=null;S.target='A';renderLocs();renderNow();draw()}
+async function setLoc(slot,p){
+  S[slot]={name:p.name,lat:+p.lat,lon:+p.lon,fc:null,clim:null};
+  renderLocs();renderNow();
+  await fetchFc(S[slot]);renderNow();draw();
+}
+
+async function draw(){
+  document.querySelectorAll('#rg button').forEach(b=>b.classList.toggle('on',+b.dataset.d===S.days));
+  $('uC').classList.toggle('on',U==='C');$('uF').classList.toggle('on',U==='F');
+  const Ls=[S.A,S.B].filter(l=>l&&l.fc);if(!Ls.length)return;
+  $('note').textContent=S.days>16?'載入歷史資料以推估 16 天後的趨勢…':'';
+  const ser=[];for(const L of Ls)ser.push(await series(L,S.days));
+  const cmp=ser.length>1,labels=ser[0].labels,cs=getComputedStyle(document.documentElement),col=n=>cs.getPropertyValue(n).trim();
+  const ds=(label,data,c,est,x={})=>({label,data,borderColor:c,backgroundColor:c+'33',tension:.3,pointRadius:S.days>30?0:2,borderWidth:2,spanGaps:true,segment:{borderDash:ctx=>est&&est[ctx.p1DataIndex]?[6,4]:undefined},...x});
+  CH.forEach(([id,k,name])=>{
+    const temp=k==='t'||k==='a',cf=temp?cv:id1,un=temp?'°'+U:'%';
+    const sets=ser.map((o,i)=>ds((cmp?short(Ls[i].name)+' ':'')+name,o[k].map(cf),col(cmp?(i?'--cb':'--ca'):'--c'+({t:1,a:2,h:3,p:4})[k]),o.est,{fill:!cmp&&S.days===1}));
+    if(k==='t'&&!cmp&&S.days>1){sets.push(ds('最高',ser[0].x.map(cf),col('--c1')+'99',ser[0].est,{borderWidth:1,pointRadius:0}));sets.push(ds('最低',ser[0].n.map(cf),col('--c3')+'99',ser[0].est,{borderWidth:1,pointRadius:0}))}
+    $('l'+id).textContent=name+' ('+un+')'+(k==='p'&&S.days>1?(S.days>1?' · 每日最高值':''):'');
+    if(charts[id])charts[id].destroy();
+    charts[id]=new Chart($(id),{type:'line',data:{labels,datasets:sets},options:{responsive:true,maintainAspectRatio:false,interaction:{mode:'index',intersect:false},
+      plugins:{legend:{display:sets.length>1,labels:{color:col('--mut')}},tooltip:{callbacks:{label:c=>c.dataset.label+': '+(c.parsed.y==null?'-':c.parsed.y.toFixed(1))+un}}},
+      scales:{x:{ticks:{color:col('--mut'),maxTicksLimit:10},grid:{color:col('--bd')}},y:{...(k==='p'?{min:0,max:100}:{}),ticks:{color:col('--mut')},grid:{color:col('--bd')}}}}});
+  });
+  $('note').textContent=(S.days===1?'未來 24 小時逐時預報。':'每日平均（降雨機率為當日最高值）。')+(S.days>16?' 前 16 天為氣象模式預報；之後（虛線）為過去 3 年同期平均推估，降雨機率為同期下雨日比例，僅供趨勢參考。':'')+' 資料來源：Open-Meteo。';
+}
+
+/* ---------- 搜尋 / 定位 / 事件 ---------- */
+async function search(){
+  const q=$('q').value.trim();if(!q)return;
+  try{
+    const r=await (await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=json&limit=6&accept-language=zh-TW`)).json();
+    const box=$('res');box.innerHTML=r.length?'':'<div>找不到結果</div>';
+    r.forEach(p=>{const d=document.createElement('div');d.textContent=p.display_name;
+      d.onclick=()=>{box.style.display='none';$('q').value='';setLoc(S.target,{name:p.display_name,lat:p.lat,lon:p.lon})};box.appendChild(d)});
+    box.style.display='block';
+  }catch(e){$('note').textContent='搜尋失敗，請稍後再試。'}
+}
+$('go').onclick=search;
+$('q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
+document.addEventListener('click',e=>{if(!e.target.closest('.sr'))$('res').style.display='none'});
+$('sA').onclick=()=>{S.target='A';renderLocs()};
+$('sB').onclick=()=>{S.target='B';renderLocs()};
+$('uC').onclick=()=>{U='C';ss('unit',U);renderNow();draw()};
+$('uF').onclick=()=>{U='F';ss('unit',U);renderNow();draw()};
+
+function locate(){
+  const fallback=()=>setLoc('A',{name:'高雄（預設）',lat:22.6273,lon:120.3014});
+  S.target='A';
+  if(!navigator.geolocation){fallback();return}
+  navigator.geolocation.getCurrentPosition(async p=>{
+    let name=`${p.coords.latitude.toFixed(3)}, ${p.coords.longitude.toFixed(3)}`;
+    try{const r=await (await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${p.coords.latitude}&lon=${p.coords.longitude}&format=json&zoom=12&accept-language=zh-TW`)).json();if(r.display_name)name=r.display_name}catch(e){}
+    setLoc('A',{name,lat:p.coords.latitude,lon:p.coords.longitude});
+  },fallback,{timeout:8000});
+}
+$('me').onclick=locate;
+renderLocs();locate();
+</script>
+</body>
+</html>
