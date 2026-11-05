@@ -35,6 +35,12 @@ button.sm{padding:3px 8px;font-size:12px;border-radius:8px}
 #charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:14px}
 #charts .card{margin:0}
 .note{color:var(--mut);font-size:12px;margin-top:8px}
+.days{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:8px;max-height:440px;overflow:auto}
+.dc{border:1px solid var(--bd);border-radius:10px;padding:8px;cursor:pointer;background:var(--bg);font-size:13px}
+.dc:hover{border-color:var(--c3)}
+.dc.sel{border:2px solid var(--c3);padding:7px}
+.dd{font-weight:600;margin-bottom:4px}
+.dr{margin-top:2px}.ds{color:var(--mut);font-size:12px}
 @media(max-width:560px){.tiles{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
@@ -64,6 +70,8 @@ button.sm{padding:3px 8px;font-size:12px;border-radius:8px}
     <div class="row" style="margin-top:10px"><span class="lab" style="margin:0">單位</span><button id="uC">°C</button><button id="uF">°F</button></div>
     <div class="note" id="note"></div>
   </div>
+
+  <div class="card" id="dayscard" style="display:none"><div class="lab">每日預報（點選任一天，上方主視窗會切換為當天資訊）</div><div id="days" class="days"></div></div>
 
   <div id="charts"></div>
 </div>
@@ -112,7 +120,7 @@ async function getClim(L){
   return L.clim=acc;
 }
 async function series(L,days){
-  const h=L.fc.hourly,o={labels:[],t:[],x:[],n:[],a:[],h:[],p:[],est:[]};
+  const h=L.fc.hourly,o={labels:[],dates:[],t:[],x:[],n:[],a:[],h:[],p:[],est:[]};
   if(days===1){
     const i0=Math.max(0,h.time.findIndex(x=>x>=L.fc.current.time.slice(0,13)));
     for(let i=i0;i<Math.min(i0+24,h.time.length);i++){o.labels.push(h.time[i].slice(5,10)+' '+h.time[i].slice(11,16));o.t.push(h.temperature_2m[i]);o.a.push(h.apparent_temperature[i]);o.h.push(h.relative_humidity_2m[i]);o.p.push(h.precipitation_probability[i])}
@@ -121,13 +129,13 @@ async function series(L,days){
   const m={};
   h.time.forEach((t,i)=>{const e=m[t.slice(0,10)]=m[t.slice(0,10)]||{t:[],a:[],h:[],p:[]};e.t.push(h.temperature_2m[i]);e.a.push(h.apparent_temperature[i]);e.h.push(h.relative_humidity_2m[i]);e.p.push(h.precipitation_probability[i])});
   const keys=Object.keys(m).sort();
-  keys.slice(0,days).forEach(k=>{o.labels.push(k.slice(5));o.t.push(mean(m[k].t));o.x.push(mx(m[k].t));o.n.push(mn(m[k].t));o.a.push(mean(m[k].a));o.h.push(mean(m[k].h));o.p.push(mx(m[k].p));o.est.push(false)});
+  keys.slice(0,days).forEach(k=>{o.labels.push(k.slice(5));o.dates.push(k);o.t.push(mean(m[k].t));o.x.push(mx(m[k].t));o.n.push(mn(m[k].t));o.a.push(mean(m[k].a));o.h.push(mean(m[k].h));o.p.push(mx(m[k].p));o.est.push(false)});
   if(days>keys.length){
     const c=await getClim(L),st=new Date(keys[keys.length-1]+'T00:00:00');
     for(let i=1;o.labels.length<days;i++){
       const dt=new Date(st.getTime()+i*864e5),md=iso(dt).slice(5),e=c[md],pool=[];
       for(let f=-3;f<=3;f++){const q=c[iso(new Date(dt.getTime()+f*864e5)).slice(5)];if(q)pool.push(...q.p)}
-      o.labels.push(md);o.est.push(true);
+      o.labels.push(md);o.dates.push(iso(dt));o.est.push(true);
       o.t.push(e?mean(e.t):null);o.x.push(e?mean(e.x):null);o.n.push(e?mean(e.n):null);o.a.push(e?mean(e.a):null);o.h.push(e?mean(e.h):null);
       o.p.push(pool.length?100*pool.filter(v=>v>=1).length/pool.length:null);
     }
@@ -136,16 +144,31 @@ async function series(L,days){
 }
 
 /* ---------- 畫面 ---------- */
+const dayLab=(d,first)=>(first?'今天 ':'')+d.slice(5).replace('-','/')+' 週'+'日一二三四五六'[new Date(d+'T00:00:00').getDay()];
 function renderNow(){
   $('now').innerHTML=[S.A,S.B].filter(Boolean).map((L,i)=>{
     if(!L.fc)return `<div class="lab">${esc(short(L.name))}：${L.err?'載入失敗，請檢查網路':'載入中…'}</div>`;
+    const T=(l,v,k,sub)=>`<div class="tile"><div class="lab">${l}</div><div class="big" style="color:var(${k})">${v}</div>${sub?`<div class="lab" style="margin:4px 0 0">${sub}</div>`:''}</div>`;
+    const q=S.Ls?S.Ls.indexOf(L):-1,o=q>=0&&S.ser?S.ser[q]:null,j=S.sel&&o?o.dates.indexOf(S.sel):-1,who=`${i?'比較':'主要'}・${esc(short(L.name))}`;
+    if(j>=0)return `<div class="nm">${who}・${dayLab(S.sel)}${o.est[j]?'（歷史推估）':''}</div><div class="tiles">`+
+      T('平均溫度',fmt(cv(o.t[j]))+'°'+U,'--c1','最高 '+fmt(cv(o.x[j]))+'° / 最低 '+fmt(cv(o.n[j]))+'°')+T('體感溫度',fmt(cv(o.a[j]))+'°'+U,'--c2')+
+      T('平均濕度',o.h[j]==null?'--':Math.round(o.h[j])+'%','--c3')+T('降雨機率',o.p[j]==null?'--':Math.round(o.p[j])+'%','--c4')+`</div>`;
     const c=L.fc.current,h=L.fc.hourly,ix=Math.max(0,h.time.findIndex(x=>x>=c.time.slice(0,13))),pp=h.precipitation_probability[ix];
-    const T=(l,v,k)=>`<div class="tile"><div class="lab">${l}</div><div class="big" style="color:var(${k})">${v}</div></div>`;
-    return `<div class="nm">${i?'比較':'主要'}・${esc(short(L.name))}</div><div class="tiles">`+
+    return `<div class="nm">${who}・目前</div><div class="tiles">`+
       T('目前溫度',fmt(cv(c.temperature_2m))+'°'+U,'--c1')+T('體感溫度',fmt(cv(c.apparent_temperature))+'°'+U,'--c2')+
       T('目前濕度',Math.round(c.relative_humidity_2m)+'%','--c3')+T('降雨機率',pp==null?'--':Math.round(pp)+'%','--c4')+`</div>`;
   }).join('');
 }
+function renderDays(){
+  const o=S.ser&&S.ser[0],on=o&&S.days>1&&o.dates.length;
+  $('dayscard').style.display=on?'block':'none';
+  if(!on)return;
+  const cur=S.sel||o.dates[0];
+  $('days').innerHTML=o.dates.map((d,j)=>`<div class="dc${d===cur?' sel':''}" onclick="pickDay('${d}')"><div class="dd">${dayLab(d,j===0)}</div>`+
+    S.ser.map((s,i)=>`<div class="dr"><span class="dot" style="background:var(${i?'--cb':'--ca'})"></span> <b>${fmt(cv(s.x[j]))}°</b> / ${fmt(cv(s.n[j]))}°</div><div class="ds">💧${s.h[j]==null?'--':Math.round(s.h[j])}% ☔${s.p[j]==null?'--':Math.round(s.p[j])}%</div>`).join('')+
+    (o.est[j]?'<div class="ds">歷史推估</div>':'')+`</div>`).join('');
+}
+function pickDay(d){S.sel=d===S.ser[0].dates[0]?null:d;renderNow();renderDays();window.scrollTo({top:0,behavior:'smooth'})}
 function renderLocs(){
   const line=(slot,L,c)=>L?`<div class="ll"><span class="dot" style="background:var(${c})"></span>${slot==='A'?'主要':'比較'}：${esc(L.name)} <button class="sm" onclick="favAdd('${slot}')">⭐ 收藏</button>${slot==='B'?'<button class="sm" onclick="clearB()">✕ 取消比較</button>':''}</div>`:'';
   $('locs').innerHTML=line('A',S.A,'--ca')+line('B',S.B,'--cb');
@@ -169,6 +192,7 @@ async function draw(){
   const Ls=[S.A,S.B].filter(l=>l&&l.fc);if(!Ls.length)return;
   $('note').textContent=S.days>16?'載入歷史資料以推估 16 天後的趨勢…':'';
   const ser=[];for(const L of Ls)ser.push(await series(L,S.days));
+  S.ser=ser;S.Ls=Ls;if(!ser[0].dates.includes(S.sel))S.sel=null;renderDays();renderNow();
   const cmp=ser.length>1,labels=ser[0].labels,cs=getComputedStyle(document.documentElement),col=n=>cs.getPropertyValue(n).trim();
   const ds=(label,data,c,est,x={})=>({label,data,borderColor:c,backgroundColor:c+'33',tension:.3,pointRadius:S.days>30?0:2,borderWidth:2,spanGaps:true,segment:{borderDash:ctx=>est&&est[ctx.p1DataIndex]?[6,4]:undefined},...x});
   CH.forEach(([id,k,name])=>{
